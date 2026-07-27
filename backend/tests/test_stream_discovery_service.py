@@ -3,8 +3,9 @@ from datetime import UTC, datetime
 from app.models.agreement import Agreement, AgreementStatus, AgreementTermsVersion
 from app.models.creator import Creator, CreatorStatus
 from app.models.stream_session import StreamSession, ViewerSnapshot
-from app.services.stream_discovery_service import reconcile_creator_stream_state
+from app.services.stream_discovery_service import reconcile_creator_stream_state, list_authorized_creators, reconcile_twitch_subscriptions
 from app.services.stream_info import StreamInfo
+from app.services.twitch_client import FakeTwitchClient
 
 
 def _authorized_creator(db_session):
@@ -166,3 +167,50 @@ def test_stream_id_collision_across_creators_is_caught_not_crashed(db_session):
     creator1_session = db_session.query(StreamSession).filter(StreamSession.creator_id == creator1.id).first()
     assert creator1_session is not None
     assert creator1_session.ended_at is None
+
+
+def test_list_authorized_creators_filters_by_platform_and_authorization(db_session):
+    authorized = _authorized_creator(db_session)
+    unauthorized = Creator(platform="twitch", platform_channel_id="2", display_name="B")
+
+    # Create a YouTube authorized creator with different terms version
+    terms = AgreementTermsVersion(version="v2", effective_date=datetime.now(UTC).date(), body_markdown="x")
+    db_session.add(terms)
+    db_session.commit()
+    youtube_creator = Creator(
+        platform="youtube", platform_channel_id="yt-1", display_name="C", status=CreatorStatus.AUTHORIZED
+    )
+    db_session.add(youtube_creator)
+    db_session.commit()
+    db_session.add(
+        Agreement(creator_id=youtube_creator.id, terms_version_id=terms.id, rev_share_pct=50.0, status=AgreementStatus.ACTIVE)
+    )
+
+    db_session.add(unauthorized)
+    db_session.commit()
+
+    result = list_authorized_creators(db_session, platform="twitch")
+
+    assert [c.id for c in result] == [authorized.id]
+
+
+def test_reconcile_twitch_subscriptions_subscribes_and_unsubscribes(db_session):
+    authorized = _authorized_creator(db_session)
+    client = FakeTwitchClient()
+    client.subscribed_channel_ids = {authorized.platform_channel_id, "stale-channel"}
+
+    reconcile_twitch_subscriptions(db_session, client, callback_url="https://example.com/webhook")
+
+    # already-authorized creator stays subscribed, untouched
+    assert authorized.platform_channel_id in client.subscribed_channel_ids
+    # stale subscription (no longer an authorized creator) gets removed
+    assert "stale-channel" not in client.subscribed_channel_ids
+
+
+def test_reconcile_twitch_subscriptions_subscribes_newly_authorized_creator(db_session):
+    authorized = _authorized_creator(db_session)
+    client = FakeTwitchClient()
+
+    reconcile_twitch_subscriptions(db_session, client, callback_url="https://example.com/webhook")
+
+    assert authorized.platform_channel_id in client.subscribed_channel_ids

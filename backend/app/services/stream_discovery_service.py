@@ -8,6 +8,7 @@ from app.models.creator import Creator
 from app.models.stream_session import StreamSession, ViewerSnapshot
 from app.services.permission_gate import is_authorized
 from app.services.stream_info import StreamInfo
+from app.services.twitch_client import TwitchClient
 
 logger = logging.getLogger(__name__)
 
@@ -92,3 +93,35 @@ def reconcile_creator_stream_state(
 
     db.add(ViewerSnapshot(stream_session_id=session.id, viewer_count=stream_info.viewer_count))
     db.commit()
+
+
+def list_authorized_creators(db: Session, platform: str) -> list[Creator]:
+    """Return all creators for a given platform who are currently authorized.
+
+    A creator is authorized when both:
+    1. Creator.status == CreatorStatus.AUTHORIZED, and
+    2. at least one Agreement row has Agreement.status == AgreementStatus.ACTIVE.
+    """
+    creators = db.query(Creator).filter(Creator.platform == platform).all()
+    return [c for c in creators if is_authorized(db, c.id)]
+
+
+def reconcile_twitch_subscriptions(db: Session, client: TwitchClient, callback_url: str) -> None:
+    """Reconcile Twitch EventSub subscriptions against authorized creators.
+
+    Ensures that:
+    - Every authorized Twitch creator has an active subscription
+    - No stale subscriptions exist for creators who are no longer authorized
+    """
+    authorized_channel_ids = {
+        c.platform_channel_id for c in list_authorized_creators(db, platform="twitch")
+    }
+    subscribed_channel_ids = client.list_subscribed_channel_ids()
+
+    # Subscribe to newly authorized creators
+    for channel_id in authorized_channel_ids - subscribed_channel_ids:
+        client.subscribe(channel_id, callback_url)
+
+    # Unsubscribe from no-longer-authorized creators
+    for channel_id in subscribed_channel_ids - authorized_channel_ids:
+        client.unsubscribe_channel(channel_id)
