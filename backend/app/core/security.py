@@ -29,10 +29,12 @@ def verify_magic_link_token(token: str, expected_purpose: MagicLinkPurpose) -> i
     settings = get_settings()
     try:
         payload = jwt.decode(token, settings.jwt_secret, algorithms=["HS256"])
+        if payload.get("purpose") != expected_purpose:
+            raise InvalidMagicLinkToken("This link isn't valid for this action.")
+        return int(payload["sub"])
     except jwt.ExpiredSignatureError as exc:
         raise InvalidMagicLinkToken("This link has expired. Request a new one.") from exc
     except jwt.InvalidTokenError as exc:
         raise InvalidMagicLinkToken("This link isn't valid.") from exc
-    if payload.get("purpose") != expected_purpose:
-        raise InvalidMagicLinkToken("This link isn't valid for this action.")
-    return int(payload["sub"])
+    except (KeyError, ValueError, TypeError) as exc:
+        raise InvalidMagicLinkToken("This link isn't valid.") from exc

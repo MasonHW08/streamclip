@@ -41,3 +41,17 @@ def test_wrong_secret_rejected():
     with pytest.raises(InvalidMagicLinkToken):
         verify_magic_link_token(forged, "agree")
     assert settings.jwt_secret != "wrong-secret"
+
+
+def test_missing_sub_claim_rejected():
+    settings = get_settings()
+    forged = jwt.encode({"purpose": "agree"}, settings.jwt_secret, algorithm="HS256")
+    with pytest.raises(InvalidMagicLinkToken):
+        verify_magic_link_token(forged, "agree")
+
+
+def test_non_numeric_sub_rejected():
+    settings = get_settings()
+    forged = jwt.encode({"sub": "not-a-number", "purpose": "agree"}, settings.jwt_secret, algorithm="HS256")
+    with pytest.raises(InvalidMagicLinkToken):
+        verify_magic_link_token(forged, "agree")
