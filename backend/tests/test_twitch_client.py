@@ -118,3 +118,79 @@ def test_get_stream_status_returns_none_when_not_live(mock_get, mock_post):
 
     client = TwitchAPIClient(client_id="cid", client_secret="csecret")
     assert client.get_stream_status("channel-1") is None
+
+
+@patch("app.services.twitch_client.httpx.delete")
+@patch("app.services.twitch_client.httpx.post")
+@patch("app.services.twitch_client.httpx.get")
+def test_list_subscribed_channel_ids(mock_get, mock_post, mock_delete, monkeypatch):
+    monkeypatch.setenv("TWITCH_WEBHOOK_SECRET", "shh")
+    from app.core.config import get_settings
+
+    get_settings.cache_clear()
+    mock_post.return_value = _mock_response({"access_token": "tok-1", "expires_in": 3600})
+    mock_get.return_value = _mock_response(
+        {
+            "data": [
+                {"condition": {"broadcaster_user_id": "channel-1"}},
+                {"condition": {"broadcaster_user_id": "channel-2"}},
+                {"condition": {"broadcaster_user_id": "channel-1"}},
+            ]
+        }
+    )
+
+    client = TwitchAPIClient(client_id="cid", client_secret="csecret")
+    assert client.list_subscribed_channel_ids() == {"channel-1", "channel-2"}
+
+
+@patch("app.services.twitch_client.httpx.delete")
+@patch("app.services.twitch_client.httpx.post")
+@patch("app.services.twitch_client.httpx.get")
+def test_subscribe_creates_online_and_offline_subscriptions(
+    mock_get, mock_post, mock_delete, monkeypatch
+):
+    monkeypatch.setenv("TWITCH_WEBHOOK_SECRET", "shh")
+    from app.core.config import get_settings
+
+    get_settings.cache_clear()
+    token_response = _mock_response({"access_token": "tok-1", "expires_in": 3600})
+    subscribe_response = _mock_response({}, status_code=202)
+    mock_post.side_effect = [token_response, subscribe_response, subscribe_response]
+
+    client = TwitchAPIClient(client_id="cid", client_secret="csecret")
+    client.subscribe("channel-1", "https://example.com/webhooks/twitch/eventsub")
+
+    subscription_calls = mock_post.call_args_list[1:]
+    assert len(subscription_calls) == 2
+    event_types = {call.kwargs["json"]["type"] for call in subscription_calls}
+    assert event_types == {"stream.online", "stream.offline"}
+    for call in subscription_calls:
+        assert call.kwargs["json"]["condition"]["broadcaster_user_id"] == "channel-1"
+        assert call.kwargs["json"]["transport"]["secret"] == "shh"
+
+
+@patch("app.services.twitch_client.httpx.delete")
+@patch("app.services.twitch_client.httpx.post")
+@patch("app.services.twitch_client.httpx.get")
+def test_unsubscribe_channel_deletes_its_subscriptions(mock_get, mock_post, mock_delete, monkeypatch):
+    monkeypatch.setenv("TWITCH_WEBHOOK_SECRET", "shh")
+    from app.core.config import get_settings
+
+    get_settings.cache_clear()
+    mock_post.return_value = _mock_response({"access_token": "tok-1", "expires_in": 3600})
+    mock_get.return_value = _mock_response(
+        {
+            "data": [
+                {"id": "sub-1", "condition": {"broadcaster_user_id": "channel-1"}},
+                {"id": "sub-2", "condition": {"broadcaster_user_id": "channel-1"}},
+                {"id": "sub-3", "condition": {"broadcaster_user_id": "channel-2"}},
+            ]
+        }
+    )
+    mock_delete.return_value = _mock_response({}, status_code=204)
+
+    client = TwitchAPIClient(client_id="cid", client_secret="csecret")
+    client.unsubscribe_channel("channel-1")
+
+    deleted_ids = {call.kwargs["params"]["id"] for call in mock_delete.call_args_list}
+    assert deleted_ids == {"sub-1", "sub-2"}

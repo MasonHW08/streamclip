@@ -5,6 +5,7 @@ from typing import Protocol
 
 import httpx
 
+from app.core.config import get_settings
 from app.services.stream_info import StreamInfo
 
 
@@ -112,3 +113,47 @@ class TwitchAPIClient:
             viewer_count=stream["viewer_count"],
             started_at=datetime.fromisoformat(stream["started_at"].replace("Z", "+00:00")),
         )
+
+    def list_subscribed_channel_ids(self) -> set[str]:
+        response = httpx.get(_EVENTSUB_URL, headers=self._headers(), timeout=10.0)
+        response.raise_for_status()
+        return {
+            item["condition"]["broadcaster_user_id"] for item in response.json()["data"]
+        }
+
+    def subscribe(self, channel_id: str, callback_url: str) -> None:
+        settings = get_settings()
+        for event_type in ("stream.online", "stream.offline"):
+            response = httpx.post(
+                _EVENTSUB_URL,
+                headers=self._headers(),
+                json={
+                    "type": event_type,
+                    "version": "1",
+                    "condition": {"broadcaster_user_id": channel_id},
+                    "transport": {
+                        "method": "webhook",
+                        "callback": callback_url,
+                        "secret": settings.twitch_webhook_secret,
+                    },
+                },
+                timeout=10.0,
+            )
+            response.raise_for_status()
+
+    def unsubscribe_channel(self, channel_id: str) -> None:
+        response = httpx.get(_EVENTSUB_URL, headers=self._headers(), timeout=10.0)
+        response.raise_for_status()
+        subscription_ids = [
+            item["id"]
+            for item in response.json()["data"]
+            if item["condition"]["broadcaster_user_id"] == channel_id
+        ]
+        for subscription_id in subscription_ids:
+            delete_response = httpx.delete(
+                _EVENTSUB_URL,
+                headers=self._headers(),
+                params={"id": subscription_id},
+                timeout=10.0,
+            )
+            delete_response.raise_for_status()

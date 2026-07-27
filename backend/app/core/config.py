@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     public_base_url: str = "http://localhost:8000"
     default_rev_share_pct: float = 50.0
     environment: str = "development"
+    twitch_webhook_secret: str = ""
 
     @model_validator(mode="after")
     def _reject_insecure_jwt_secret(self) -> Self:
