@@ -76,3 +76,68 @@ def test_revoke_flow_revokes_creator(db_session):
 
     db_session.refresh(creator)
     assert creator.status == CreatorStatus.REVOKED
+
+
+def test_agree_token_rejected_on_revoke_endpoint(db_session):
+    _seed_terms(db_session)
+    creator = Creator(platform="twitch", platform_channel_id="1", display_name="A")
+    db_session.add(creator)
+    db_session.commit()
+    agree_token = create_magic_link_token(creator.id, "agree")
+
+    app = _make_app(db_session)
+    client = TestClient(app)
+
+    response = client.get("/partner/revoke", params={"token": agree_token})
+    assert response.status_code == 400
+
+    db_session.refresh(creator)
+    assert creator.status == CreatorStatus.PROSPECT
+
+
+def test_revoke_token_rejected_on_agree_endpoint(db_session):
+    _seed_terms(db_session)
+    creator = Creator(platform="twitch", platform_channel_id="1", display_name="A")
+    db_session.add(creator)
+    db_session.commit()
+    revoke_token = create_magic_link_token(creator.id, "revoke")
+
+    app = _make_app(db_session)
+    client = TestClient(app)
+
+    response = client.get("/partner/agree", params={"token": revoke_token})
+    assert response.status_code == 400
+
+    db_session.refresh(creator)
+    assert creator.status == CreatorStatus.PROSPECT
+
+
+def test_double_submit_agree_returns_clean_conflict_not_crash(db_session):
+    _seed_terms(db_session)
+    creator = Creator(platform="twitch", platform_channel_id="1", display_name="A")
+    db_session.add(creator)
+    db_session.commit()
+    token = create_magic_link_token(creator.id, "agree")
+
+    app = _make_app(db_session)
+    client = TestClient(app)
+
+    first = client.post("/partner/agree", data={"token": token, "signature_name": "A"})
+    assert first.status_code == 200
+
+    second = client.post("/partner/agree", data={"token": token, "signature_name": "A"})
+    assert second.status_code == 409
+
+    db_session.refresh(creator)
+    assert creator.status == CreatorStatus.AUTHORIZED
+
+
+def test_agree_token_for_missing_creator_returns_clean_error_not_crash(db_session):
+    _seed_terms(db_session)
+    token = create_magic_link_token(creator_id=999999, purpose="agree")
+
+    app = _make_app(db_session)
+    client = TestClient(app)
+
+    response = client.get("/partner/agree", params={"token": token})
+    assert response.status_code == 400

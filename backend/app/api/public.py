@@ -45,7 +45,15 @@ def show_agreement(request: Request, token: str, db: Session = Depends(get_db)):
         return _token_error(request, InvalidMagicLinkToken("This link isn't valid."))
 
     settings = get_settings()
-    terms = get_active_terms_version(db)
+    try:
+        terms = get_active_terms_version(db)
+    except ValueError:
+        return templates.TemplateResponse(
+            request,
+            "token_error.html",
+            {"message": "This page isn't ready yet. Please try again shortly."},
+            status_code=500,
+        )
     terms_body = terms.body_markdown.format(rev_share_pct=settings.default_rev_share_pct)
     return templates.TemplateResponse(
         request,
