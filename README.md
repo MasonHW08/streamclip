@@ -7,10 +7,13 @@ for the full design.
 ## Local setup
 
 1. Copy `.env.example` to `backend/.env` and fill in `JWT_SECRET` (any long random
-   string) and `RESEND_API_KEY` (leave blank to skip real sends — the worker will
-   just log a failure and leave the email in `approved` status for retry). The app
+   string — at least 32 characters, and the app refuses to start with the
+   `.env.example` placeholder unless `ENVIRONMENT=development`) and `RESEND_API_KEY`
+   (leave blank to skip real sends — the worker logs the failure and leaves the email
+   in `approved` status, retriable via `POST /internal/outreach/{id}/retry`). The app
    loads settings relative to the `backend/` working directory, which is where all
    the commands below (`alembic`, `uvicorn`, `arq`, the `scripts.*` modules) run from.
+   `infra/docker-compose.yml` reads the same `backend/.env` file.
 2. Start Postgres and Redis:
    ```
    docker compose -f infra/docker-compose.yml up -d postgres redis
@@ -40,6 +43,26 @@ Requires Postgres + Redis running (step 2 above).
 cd backend
 pytest -v
 ```
+
+The suite creates and drops the whole schema, so `tests/conftest.py` refuses to run
+unless the resolved database name contains `test`. If you've `export`ed a
+`DATABASE_URL` pointing at the dev database in your shell, unset it first — an
+exported value overrides the test default.
+
+## Deployment: proxy headers
+
+`backend/Dockerfile` runs uvicorn with `--proxy-headers --forwarded-allow-ips='*'`.
+Per-IP rate limiting on `/partner/*` and the `agreements.accepted_ip` evidence field
+both read the client address, and behind a load balancer the raw socket peer is the
+balancer — collapsing every creator into one rate-limit bucket and recording a
+useless IP on the consent record. These flags make uvicorn trust `X-Forwarded-For`
+instead.
+
+This assumes the deploy target is a PaaS edge (Railway et al.) that sets and strips
+`X-Forwarded-For` itself and is the only thing that can reach the container. Do not
+expose the container directly to the internet with these flags set — a caller could
+then spoof any client IP by supplying the header themselves. If you deploy somewhere
+without a trusted edge, narrow `--forwarded-allow-ips` to your balancer's addresses.
 
 ## Adding a creator to the outreach pipeline
 

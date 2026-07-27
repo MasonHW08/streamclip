@@ -40,4 +40,8 @@ jobs:
       - run: pip install -e ".[dev]"
       - run: ruff check .
       - run: mypy app
+      # Proves the full migration chain applies cleanly from an empty database.
+      # Runs before pytest, whose conftest builds its own schema via create_all and
+      # drops it again in teardown.
+      - run: alembic upgrade head
       - run: pytest -v

@@ -23,7 +23,7 @@ services:
     build:
       context: ../backend
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
-    env_file: ../.env
+    env_file: ../backend/.env
     ports: ["8000:8000"]
     depends_on:
       postgres:
@@ -37,7 +37,7 @@ services:
     build:
       context: ../backend
     command: arq app.workers.settings.WorkerSettings
-    env_file: ../.env
+    env_file: ../backend/.env
     depends_on:
       postgres:
         condition: service_healthy
