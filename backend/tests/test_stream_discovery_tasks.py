@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 
 import pytest
+from sqlalchemy import text
 
 from app.models.agreement import Agreement, AgreementStatus, AgreementTermsVersion
 from app.models.creator import Creator, CreatorStatus
@@ -127,6 +128,81 @@ async def test_poll_youtube_streams_one_creator_failure_does_not_block_the_rest(
             )
         },
         failing_channel_id="yt-fail",
+    )
+    monkeypatch.setattr(
+        "app.workers.stream_discovery_tasks.YouTubeAPIClient", lambda api_key: fake_client
+    )
+
+    await poll_youtube_streams({})
+
+    failing_session = (
+        db_session.query(StreamSession).filter(StreamSession.creator_id == failing_creator.id).first()
+    )
+    healthy_session = (
+        db_session.query(StreamSession).filter(StreamSession.creator_id == healthy_creator.id).first()
+    )
+    assert failing_session is None
+    assert healthy_session is not None
+
+
+@pytest.mark.asyncio
+async def test_poll_youtube_streams_db_error_for_one_creator_does_not_poison_session_for_the_rest(
+    db_session, monkeypatch
+):
+    """A DB-origin failure (not an HTTP-call failure) must not cascade.
+
+    Unlike test_poll_youtube_streams_one_creator_failure_does_not_block_the_rest
+    (where get_stream_status raises *before* any DB interaction),
+    this simulates reconcile_creator_stream_state itself failing with a real
+    Postgres-level error (e.g. a constraint violation or serialization
+    failure) partway through its own work. That leaves the shared session's
+    transaction aborted at the database level, not just a Python exception —
+    so without an explicit db.rollback() in the poll loop's except block, the
+    *next* creator's first query against that same session would itself raise
+    (PendingRollbackError / "current transaction is aborted"), which the
+    broad except would also swallow, making the healthy creator falsely look
+    like it failed too.
+    """
+    monkeypatch.setattr(
+        "app.workers.stream_discovery_tasks.SessionLocal", lambda: _NonClosingSessionProxy(db_session)
+    )
+    from app.services.stream_discovery_service import (
+        reconcile_creator_stream_state as real_reconcile,
+    )
+
+    failing_creator = _authorized_creator(db_session, "youtube", "yt-db-fail")
+    healthy_creator = _authorized_creator(db_session, "youtube", "yt-db-2")
+
+    # list_authorized_creators's underlying query has no ORDER BY, so Postgres
+    # does not guarantee it returns these two creators in insertion order —
+    # pinning the iteration order explicitly is what makes this test
+    # deterministic ("the failing creator runs first, then a later creator
+    # must still succeed"), rather than depending on incidental row order.
+    monkeypatch.setattr(
+        "app.workers.stream_discovery_tasks.list_authorized_creators",
+        lambda db, platform: [failing_creator, healthy_creator],
+    )
+
+    def flaky_reconcile(db, creator, stream_info):
+        if creator.platform_channel_id == "yt-db-fail":
+            # Real DB-level error (undefined table), not a bare Python
+            # exception — this is what actually leaves a Postgres
+            # transaction/savepoint aborted, unlike raising before touching
+            # the session at all.
+            db.execute(text("SELECT * FROM this_table_does_not_exist_xyz"))
+        else:
+            real_reconcile(db, creator, stream_info)
+
+    monkeypatch.setattr(
+        "app.workers.stream_discovery_tasks.reconcile_creator_stream_state", flaky_reconcile
+    )
+
+    fake_client = FakeYouTubeClient()
+    fake_client.stream_status["yt-db-fail"] = StreamInfo(
+        external_stream_id="vid-fail", title="t", category=None, viewer_count=1, started_at=datetime.now(UTC)
+    )
+    fake_client.stream_status["yt-db-2"] = StreamInfo(
+        external_stream_id="vid-2", title="t", category=None, viewer_count=5, started_at=datetime.now(UTC)
     )
     monkeypatch.setattr(
         "app.workers.stream_discovery_tasks.YouTubeAPIClient", lambda api_key: fake_client

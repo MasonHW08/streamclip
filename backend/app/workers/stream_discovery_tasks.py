@@ -28,6 +28,17 @@ async def poll_youtube_streams(ctx: dict) -> None:
                 # every creator after them in iteration order would otherwise
                 # go unpolled until the failure is fixed. reconcile_creator_stream_state
                 # commits per-creator, so progress made before this one is kept.
+                #
+                # rollback() is required here, not just logging: if the failure
+                # originated inside reconcile_creator_stream_state (a DB error,
+                # not just the HTTP call above), the shared session's transaction
+                # is left aborted. Without rolling back, the very next iteration's
+                # first query against this same session would itself raise
+                # (SQLAlchemy PendingRollbackError / "current transaction is
+                # aborted"), which this same except would also swallow —
+                # cascading one DB-origin failure into every later creator in
+                # this tick appearing to fail too.
+                db.rollback()
                 logger.exception(
                     "poll_youtube_streams: failed to poll creator_id=%s platform_channel_id=%s; skipping",
                     creator.id,
@@ -51,7 +62,10 @@ async def poll_twitch_streams_backup(ctx: dict) -> None:
                 reconcile_creator_stream_state(db, creator, stream_info)
             except Exception:
                 # See poll_youtube_streams above: isolate per-creator failures
-                # so one bad channel doesn't stall the rest of the batch.
+                # so one bad channel doesn't stall the rest of the batch, and
+                # roll back so a DB-origin failure doesn't leave the shared
+                # session's transaction aborted for later creators in this tick.
+                db.rollback()
                 logger.exception(
                     "poll_twitch_streams_backup: failed to poll creator_id=%s platform_channel_id=%s; skipping",
                     creator.id,
