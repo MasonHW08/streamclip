@@ -4,6 +4,7 @@ from slowapi.errors import RateLimitExceeded
 
 from app.api.internal import router as internal_router
 from app.api.public import router as public_router
+from app.api.webhooks import router as webhooks_router
 from app.core.rate_limit import limiter
 
 app = FastAPI(title="StreamClip Co.")
@@ -15,6 +16,7 @@ app.add_exception_handler(
 
 app.include_router(public_router)
 app.include_router(internal_router)
+app.include_router(webhooks_router)
 
 
 @app.get("/health")

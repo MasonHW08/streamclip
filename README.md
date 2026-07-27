@@ -64,6 +64,29 @@ expose the container directly to the internet with these flags set — a caller 
 then spoof any client IP by supplying the header themselves. If you deploy somewhere
 without a trusted edge, narrow `--forwarded-allow-ips` to your balancer's addresses.
 
+## Stream Discovery (sub-project 2)
+
+Monitors already-authorized creators' livestreams on Twitch (via EventSub
+webhook, `POST /webhooks/twitch/eventsub`) and YouTube (via polling). Nothing
+here works without real credentials:
+
+- **Twitch**: register an app at https://dev.twitch.tv/console, set
+  `TWITCH_CLIENT_ID`/`TWITCH_CLIENT_SECRET`. Set `TWITCH_WEBHOOK_SECRET` to any
+  long random string (used to verify EventSub payloads). Set
+  `TWITCH_EVENTSUB_CALLBACK_URL` to your deployed app's public URL + the
+  webhook path — Twitch must be able to reach it, so this doesn't work against
+  `localhost` without a tunnel (e.g. ngrok) during development.
+- **YouTube**: create a Google Cloud project, enable the YouTube Data API v3,
+  create an API key, set `YOUTUBE_API_KEY`. Be mindful of the default 10,000
+  units/day quota — `search.list` (used to check live status) costs 100 units
+  per call, so polling many creators frequently adds up fast; the poll
+  interval is set in `app/workers/settings.py`'s `cron_jobs`.
+
+Until these are set, the system runs fine with `Fake*Client` test doubles in
+tests, but the real workers (`poll_youtube_streams`,
+`poll_twitch_streams_backup`, `reconcile_twitch_subscriptions_task`) will
+either no-op or error against a live Twitch/YouTube API without them.
+
 ## Adding a creator to the outreach pipeline
 
 There's no discovery system yet (that's sub-project 2). For now, add a `Creator`
