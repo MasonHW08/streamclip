@@ -60,3 +60,9 @@ def test_verify_twitch_signature_rejects_tampered_body():
 
 def test_verify_twitch_signature_rejects_malformed_header():
     assert verify_twitch_signature("shh", "msg-1", "ts", b"{}", "not-a-valid-header") is False
+
+
+def test_verify_twitch_signature_rejects_non_ascii_digest_without_raising():
+    signature = "sha256=" + "a" * 63 + "é"
+
+    assert verify_twitch_signature("shh", "msg-1", "ts", b"{}", signature) is False

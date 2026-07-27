@@ -10,10 +10,15 @@ def verify_twitch_signature(
 ) -> bool:
     if not signature_header.startswith("sha256="):
         return False
+    provided_digest = signature_header.removeprefix("sha256=")
+    # A SHA-256 hex digest is always 64 lowercase hex characters. Reject anything
+    # else up front so hmac.compare_digest never sees non-ASCII input, which it
+    # raises TypeError on (it only accepts str objects with ASCII-only content).
+    if len(provided_digest) != 64 or not all(c in "0123456789abcdef" for c in provided_digest):
+        return False
     expected_digest = hmac.new(
         secret.encode(), message_id.encode() + timestamp.encode() + body, hashlib.sha256
     ).hexdigest()
-    provided_digest = signature_header.removeprefix("sha256=")
     return hmac.compare_digest(expected_digest, provided_digest)
 
 
