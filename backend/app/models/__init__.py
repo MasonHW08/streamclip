@@ -1,5 +1,6 @@
 from app.models.agreement import Agreement, AgreementTermsVersion
 from app.models.base import Base
 from app.models.creator import Creator
+from app.models.outreach import OutreachEmail
 
-__all__ = ["Base", "Creator", "Agreement", "AgreementTermsVersion"]
+__all__ = ["Base", "Creator", "Agreement", "AgreementTermsVersion", "OutreachEmail"]
