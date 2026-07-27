@@ -1,3 +1,4 @@
+import html
 import logging
 from datetime import UTC, datetime
 
@@ -57,9 +58,14 @@ async def send_approved_outreach_email(
             f"{settings.public_base_url}/partner/revoke"
             f"?token={create_magic_link_token(creator.id, 'revoke')}"
         )
+        # The outreach body is an HTML template; creator.display_name is
+        # external, platform-supplied data and must be escaped before it's
+        # interpolated into HTML (agree_url/revoke_url are app-generated,
+        # not user input, so they don't need escaping).
+        safe_display_name = html.escape(creator.display_name, quote=True)
         subject = outreach_email.subject.format(creator_name=creator.display_name)
         body = outreach_email.body.format(
-            creator_name=creator.display_name, agree_url=agree_url, revoke_url=revoke_url
+            creator_name=safe_display_name, agree_url=agree_url, revoke_url=revoke_url
         )
 
         try:

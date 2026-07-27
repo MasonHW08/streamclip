@@ -53,6 +53,28 @@ async def test_send_approved_email_marks_sent(db_session, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_send_escapes_html_in_creator_display_name(db_session, monkeypatch):
+    monkeypatch.setattr("app.workers.tasks.SessionLocal", lambda: _NonClosingSessionProxy(db_session))
+    creator = Creator(
+        platform="twitch",
+        platform_channel_id="1",
+        display_name="<script>alert(1)</script>",
+        contact_email="a@example.com",
+    )
+    db_session.add(creator)
+    db_session.commit()
+    outreach_email = draft_outreach_email(db_session, creator.id)
+    approve_outreach_email(db_session, outreach_email.id, approved_by_user_id=1)
+
+    fake_sender = FakeEmailSender()
+    await send_approved_outreach_email({}, outreach_email.id, email_sender=fake_sender)
+
+    sent_body = fake_sender.sent[0]["html_body"]
+    assert "<script>" not in sent_body
+    assert "&lt;script&gt;" in sent_body
+
+
+@pytest.mark.asyncio
 async def test_skips_email_not_in_approved_state(db_session, monkeypatch):
     monkeypatch.setattr("app.workers.tasks.SessionLocal", lambda: _NonClosingSessionProxy(db_session))
     creator = Creator(platform="twitch", platform_channel_id="1", display_name="A", contact_email="a@example.com")
