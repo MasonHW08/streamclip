@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>StreamClip Co. Partner Agreement</title></head>
+<body>
+  <h1>Partner Agreement — {{ creator_name }}</h1>
+  <p>Version {{ terms.version }} (effective {{ terms.effective_date }})</p>
+  <pre>{{ terms_body }}</pre>
+  <form method="post" action="/partner/agree">
+    <input type="hidden" name="token" value="{{ token }}">
+    <label>Type your name to confirm: <input type="text" name="signature_name" required></label>
+    <button type="submit">I Agree</button>
+  </form>
+</body>
+</html>
