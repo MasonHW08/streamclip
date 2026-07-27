@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     twitch_webhook_secret: str = ""
     twitch_client_id: str = ""
     twitch_client_secret: str = ""
+    twitch_eventsub_callback_url: str = ""
+    youtube_api_key: str = ""
 
     @model_validator(mode="after")
     def _reject_insecure_jwt_secret(self) -> Self:
