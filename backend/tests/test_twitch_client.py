@@ -1,9 +1,10 @@
 import hashlib
 import hmac
 from datetime import UTC, datetime
+from unittest.mock import MagicMock, patch
 
 from app.services.stream_info import StreamInfo
-from app.services.twitch_client import FakeTwitchClient, verify_twitch_signature
+from app.services.twitch_client import FakeTwitchClient, TwitchAPIClient, verify_twitch_signature
 
 
 def test_fake_client_returns_configured_stream_status():
@@ -66,3 +67,54 @@ def test_verify_twitch_signature_rejects_non_ascii_digest_without_raising():
     signature = "sha256=" + "a" * 63 + "é"
 
     assert verify_twitch_signature("shh", "msg-1", "ts", b"{}", signature) is False
+
+
+def _mock_response(json_data, status_code=200):
+    response = MagicMock()
+    response.status_code = status_code
+    response.json.return_value = json_data
+    response.raise_for_status = MagicMock()
+    return response
+
+
+@patch("app.services.twitch_client.httpx.post")
+@patch("app.services.twitch_client.httpx.get")
+def test_get_stream_status_fetches_and_caches_token(mock_get, mock_post):
+    mock_post.return_value = _mock_response({"access_token": "tok-1", "expires_in": 3600})
+    mock_get.return_value = _mock_response(
+        {
+            "data": [
+                {
+                    "id": "stream-1",
+                    "title": "Ranked grind",
+                    "game_name": "League of Legends",
+                    "viewer_count": 100,
+                    "started_at": "2026-01-01T00:00:00Z",
+                }
+            ]
+        }
+    )
+
+    client = TwitchAPIClient(client_id="cid", client_secret="csecret")
+    info = client.get_stream_status("channel-1")
+
+    assert info is not None
+    assert info.external_stream_id == "stream-1"
+    assert info.title == "Ranked grind"
+    assert info.category == "League of Legends"
+    assert info.viewer_count == 100
+    assert info.started_at == datetime(2026, 1, 1, tzinfo=UTC)
+    assert mock_post.call_count == 1  # token fetched once
+
+    client.get_stream_status("channel-1")
+    assert mock_post.call_count == 1  # second call reuses cached token, no new fetch
+
+
+@patch("app.services.twitch_client.httpx.post")
+@patch("app.services.twitch_client.httpx.get")
+def test_get_stream_status_returns_none_when_not_live(mock_get, mock_post):
+    mock_post.return_value = _mock_response({"access_token": "tok-1", "expires_in": 3600})
+    mock_get.return_value = _mock_response({"data": []})
+
+    client = TwitchAPIClient(client_id="cid", client_secret="csecret")
+    assert client.get_stream_status("channel-1") is None
