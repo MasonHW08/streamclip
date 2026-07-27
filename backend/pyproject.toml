@@ -20,7 +20,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.3", "pytest-cov>=5.0", "ruff>=0.7", "mypy>=1.13"]
+dev = ["pytest>=8.3", "pytest-cov>=5.0", "pytest-asyncio>=0.24", "ruff>=0.7", "mypy>=1.13"]
 
 [build-system]
 requires = ["setuptools>=68"]
@@ -36,3 +36,6 @@ target-version = "py312"
 [tool.mypy]
 python_version = "3.12"
 ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
