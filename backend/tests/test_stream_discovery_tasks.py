@@ -36,7 +36,9 @@ class _NonClosingSessionProxy:
 
 
 def _authorized_creator(db_session, platform, channel_id):
-    terms = AgreementTermsVersion(version="v1", effective_date=datetime.now(UTC).date(), body_markdown="x")
+    terms = AgreementTermsVersion(
+        version=f"v1-{platform}-{channel_id}", effective_date=datetime.now(UTC).date(), body_markdown="x"
+    )
     db_session.add(terms)
     db_session.commit()
     creator = Creator(
@@ -95,3 +97,48 @@ async def test_poll_twitch_streams_backup_closes_stale_session(db_session, monke
 
     session = db_session.query(StreamSession).filter(StreamSession.creator_id == creator.id).first()
     assert session.ended_at is not None
+
+
+class _FlakyYouTubeClient:
+    """Raises for one configured channel_id, behaves like FakeYouTubeClient for others."""
+
+    def __init__(self, stream_status, failing_channel_id):
+        self.stream_status = stream_status
+        self.failing_channel_id = failing_channel_id
+
+    def get_stream_status(self, channel_id):
+        if channel_id == self.failing_channel_id:
+            raise RuntimeError("simulated transient API failure")
+        return self.stream_status.get(channel_id)
+
+
+@pytest.mark.asyncio
+async def test_poll_youtube_streams_one_creator_failure_does_not_block_the_rest(db_session, monkeypatch):
+    monkeypatch.setattr(
+        "app.workers.stream_discovery_tasks.SessionLocal", lambda: _NonClosingSessionProxy(db_session)
+    )
+    failing_creator = _authorized_creator(db_session, "youtube", "yt-fail")
+    healthy_creator = _authorized_creator(db_session, "youtube", "yt-2")
+
+    fake_client = _FlakyYouTubeClient(
+        stream_status={
+            "yt-2": StreamInfo(
+                external_stream_id="vid-2", title="t", category=None, viewer_count=5, started_at=datetime.now(UTC)
+            )
+        },
+        failing_channel_id="yt-fail",
+    )
+    monkeypatch.setattr(
+        "app.workers.stream_discovery_tasks.YouTubeAPIClient", lambda api_key: fake_client
+    )
+
+    await poll_youtube_streams({})
+
+    failing_session = (
+        db_session.query(StreamSession).filter(StreamSession.creator_id == failing_creator.id).first()
+    )
+    healthy_session = (
+        db_session.query(StreamSession).filter(StreamSession.creator_id == healthy_creator.id).first()
+    )
+    assert failing_session is None
+    assert healthy_session is not None
