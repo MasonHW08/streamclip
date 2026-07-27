@@ -6,6 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PLACEHOLDER_JWT_SECRET = "change-me-to-a-long-random-string"
 MIN_JWT_SECRET_LENGTH = 32
+MIN_TWITCH_WEBHOOK_SECRET_LENGTH = 16
 
 
 class Settings(BaseSettings):
@@ -44,6 +45,30 @@ class Settings(BaseSettings):
             raise ValueError(
                 f"JWT_SECRET is too short ({len(self.jwt_secret)} characters); at least "
                 f"{MIN_JWT_SECRET_LENGTH} are required when "
+                f"ENVIRONMENT={self.environment!r}."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _reject_insecure_twitch_webhook_secret(self) -> Self:
+        """Fail fast outside development if TWITCH_WEBHOOK_SECRET is empty or too short.
+
+        HMAC-SHA256 over an empty (or guessable, too-short) key is still a
+        well-defined, computable function: anyone who knows the secret is blank —
+        and blank is the shipped default — can compute a valid `sha256=` signature
+        for an arbitrary forged EventSub payload. Since signature verification is
+        the entire authentication mechanism for the Twitch webhook route, a blank
+        secret in production makes that check a no-op, letting an unauthenticated
+        caller inject fake stream.online/stream.offline events. Development is
+        exempt so local/test runs can omit it entirely.
+        """
+        if self.environment == "development":
+            return self
+        if len(self.twitch_webhook_secret) < MIN_TWITCH_WEBHOOK_SECRET_LENGTH:
+            raise ValueError(
+                "TWITCH_WEBHOOK_SECRET is missing or too short "
+                f"({len(self.twitch_webhook_secret)} characters); at least "
+                f"{MIN_TWITCH_WEBHOOK_SECRET_LENGTH} are required when "
                 f"ENVIRONMENT={self.environment!r}."
             )
         return self

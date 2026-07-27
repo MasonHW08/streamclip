@@ -75,6 +75,37 @@ def test_webhook_rejects_invalid_signature(db_session, monkeypatch):
     assert response.status_code == 403
 
 
+def test_webhook_rejects_malformed_json_with_valid_signature(db_session, monkeypatch):
+    monkeypatch.setenv("TWITCH_WEBHOOK_SECRET", WEBHOOK_SECRET)
+    from app.core.config import get_settings
+
+    get_settings.cache_clear()
+    app = _make_app(db_session)
+    client = TestClient(app)
+
+    body = b"not valid json{"
+    headers = _sign(body) | {TYPE_HEADER: "notification"}
+    response = client.post("/webhooks/twitch/eventsub", content=body, headers=headers)
+
+    assert response.status_code == 400
+
+
+def test_webhook_rejects_incomplete_notification_payload_with_valid_signature(db_session, monkeypatch):
+    monkeypatch.setenv("TWITCH_WEBHOOK_SECRET", WEBHOOK_SECRET)
+    from app.core.config import get_settings
+
+    get_settings.cache_clear()
+    app = _make_app(db_session)
+    client = TestClient(app)
+
+    # Validly-signed, valid JSON, but missing the expected "subscription"/"event" shape.
+    body = json.dumps({"unexpected": "shape"}).encode()
+    headers = _sign(body) | {TYPE_HEADER: "notification"}
+    response = client.post("/webhooks/twitch/eventsub", content=body, headers=headers)
+
+    assert response.status_code == 400
+
+
 def test_webhook_handles_verification_challenge(db_session, monkeypatch):
     monkeypatch.setenv("TWITCH_WEBHOOK_SECRET", WEBHOOK_SECRET)
     from app.core.config import get_settings

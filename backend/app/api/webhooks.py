@@ -28,15 +28,28 @@ async def receive_eventsub(request: Request, db: Session = Depends(get_db)) -> R
     if not verify_twitch_signature(settings.twitch_webhook_secret, message_id, timestamp, body, signature):
         return Response(status_code=403)
 
-    payload = json.loads(body)
     message_type = request.headers.get(_TYPE_HEADER, "")
 
-    if message_type == "webhook_callback_verification":
-        return Response(content=payload["challenge"], media_type="text/plain")
+    # The signature check above proves the body came from Twitch (or someone who
+    # knows the shared secret), but says nothing about its shape. Twitch always
+    # sends well-formed JSON matching the documented schema in practice, but this
+    # is the public internet entry point, so treat any parse/shape failure as a
+    # client error rather than letting it surface as an unhandled 500 — which
+    # would also read to Twitch's retry logic as a transient failure worth
+    # retrying indefinitely, rather than a permanent one.
+    try:
+        payload = json.loads(body)
+
+        if message_type == "webhook_callback_verification":
+            return Response(content=payload["challenge"], media_type="text/plain")
+
+        if message_type == "notification":
+            subscription_type = payload["subscription"]["type"]
+            channel_id = payload["event"]["broadcaster_user_id"]
+    except (json.JSONDecodeError, KeyError, TypeError):
+        return Response(status_code=400)
 
     if message_type == "notification":
-        subscription_type = payload["subscription"]["type"]
-        channel_id = payload["event"]["broadcaster_user_id"]
         creator = (
             db.query(Creator)
             .filter(Creator.platform == "twitch", Creator.platform_channel_id == channel_id)
