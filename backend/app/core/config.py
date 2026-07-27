@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     default_rev_share_pct: float = 50.0
     environment: str = "development"
     twitch_webhook_secret: str = ""
+    twitch_client_id: str = ""
+    twitch_client_secret: str = ""
 
     @model_validator(mode="after")
     def _reject_insecure_jwt_secret(self) -> Self:
