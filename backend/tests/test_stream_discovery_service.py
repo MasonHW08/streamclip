@@ -3,7 +3,11 @@ from datetime import UTC, datetime
 from app.models.agreement import Agreement, AgreementStatus, AgreementTermsVersion
 from app.models.creator import Creator, CreatorStatus
 from app.models.stream_session import StreamSession, ViewerSnapshot
-from app.services.stream_discovery_service import reconcile_creator_stream_state, list_authorized_creators, reconcile_twitch_subscriptions
+from app.services.stream_discovery_service import (
+    list_authorized_creators,
+    reconcile_creator_stream_state,
+    reconcile_twitch_subscriptions,
+)
 from app.services.stream_info import StreamInfo
 from app.services.twitch_client import FakeTwitchClient
 
