@@ -18,15 +18,35 @@ def get_active_terms_version(db: Session) -> AgreementTermsVersion:
     return terms
 
 
+STALE_TOKEN_MESSAGE = (
+    "This link is no longer valid — you've since revoked access; "
+    "please request a new authorization link."
+)
+
+
 def accept_agreement(
-    db: Session, creator_id: int, signature_name: str, ip: str, user_agent: str
+    db: Session,
+    creator_id: int,
+    signature_name: str,
+    ip: str,
+    user_agent: str,
+    token_issued_at: datetime | None = None,
 ) -> Agreement:
+    """Accept the current terms on behalf of ``creator_id``.
+
+    ``token_issued_at`` is the ``iat`` of the magic-link token that got the creator
+    here. Re-authorization after a revoke is intentionally allowed, but only via a
+    link minted *after* that revoke — otherwise an old agree email still sitting in
+    an inbox could silently undo a revocation.
+    """
     settings = get_settings()
     creator = db.get(Creator, creator_id)
     if creator is None:
         raise ValueError(f"No creator with id {creator_id}")
     if creator.status == CreatorStatus.AUTHORIZED.value:
         raise ValueError(f"Creator {creator_id} is already authorized")
+    if token_issued_at is not None and _has_revocation_after(db, creator_id, token_issued_at):
+        raise ValueError(STALE_TOKEN_MESSAGE)
     terms = get_active_terms_version(db)
 
     agreement = Agreement(
@@ -44,6 +64,21 @@ def accept_agreement(
     db.commit()
     db.refresh(agreement)
     return agreement
+
+
+def _has_revocation_after(db: Session, creator_id: int, moment: datetime) -> bool:
+    """True if this creator revoked at any point after ``moment``."""
+    return (
+        db.query(Agreement)
+        .filter(
+            Agreement.creator_id == creator_id,
+            Agreement.status == AgreementStatus.REVOKED.value,
+            Agreement.revoked_at.is_not(None),
+            Agreement.revoked_at > moment,
+        )
+        .first()
+        is not None
+    )
 
 
 def revoke_agreement(db: Session, creator_id: int) -> Agreement:

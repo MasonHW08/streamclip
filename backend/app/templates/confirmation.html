@@ -1,5 +1,16 @@
 <!doctype html>
 <html lang="en">
 <head><meta charset="utf-8"><title>StreamClip Co.</title></head>
-<body><h1>{{ message }}</h1></body>
+<body>
+  <h1>{{ message }}</h1>
+  {% if revoke_url %}
+  <footer>
+    <p>
+      Want out later? <a href="{{ revoke_url }}">Revoke your authorization</a> —
+      it takes effect immediately. Keep this link, or ask us for a new one at
+      partners@streamclip.co.
+    </p>
+  </footer>
+  {% endif %}
+</body>
 </html>

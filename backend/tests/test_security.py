@@ -1,3 +1,5 @@
+from datetime import UTC, datetime
+
 import jwt
 import pytest
 
@@ -6,6 +8,7 @@ from app.core.security import (
     InvalidMagicLinkToken,
     create_magic_link_token,
     verify_magic_link_token,
+    verify_magic_link_token_claims,
 )
 
 
@@ -53,3 +56,32 @@ def test_non_numeric_sub_rejected():
     forged = jwt.encode({"sub": "not-a-number", "purpose": "agree"}, settings.jwt_secret, algorithm="HS256")
     with pytest.raises(InvalidMagicLinkToken):
         verify_magic_link_token(forged, "agree")
+
+
+def test_token_carries_issued_at_claim():
+    before = datetime.now(UTC)
+    token = create_magic_link_token(42, "agree")
+    after = datetime.now(UTC)
+
+    creator_id, issued_at = verify_magic_link_token_claims(token, "agree")
+
+    assert creator_id == 42
+    assert issued_at is not None
+    # Encoded with sub-second precision, so this brackets exactly.
+    assert before <= issued_at <= after
+
+
+def test_claims_helper_rejects_wrong_purpose():
+    token = create_magic_link_token(42, "agree")
+    with pytest.raises(InvalidMagicLinkToken):
+        verify_magic_link_token_claims(token, "revoke")
+
+
+def test_legacy_token_without_iat_reports_unknown_issue_time():
+    settings = get_settings()
+    legacy = jwt.encode(
+        {"sub": "42", "purpose": "agree"}, settings.jwt_secret, algorithm="HS256"
+    )
+    creator_id, issued_at = verify_magic_link_token_claims(legacy, "agree")
+    assert creator_id == 42
+    assert issued_at is None

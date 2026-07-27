@@ -8,7 +8,12 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.core.db import get_db
 from app.core.rate_limit import limiter
-from app.core.security import InvalidMagicLinkToken, verify_magic_link_token
+from app.core.security import (
+    InvalidMagicLinkToken,
+    create_magic_link_token,
+    verify_magic_link_token,
+    verify_magic_link_token_claims,
+)
 from app.models.creator import Creator
 from app.services.agreement_service import (
     accept_agreement,
@@ -20,15 +25,29 @@ router = APIRouter(prefix="/partner", tags=["partner"])
 templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent.parent / "templates"))
 
 
+def build_revoke_url(creator_id: int) -> str:
+    """Mint a fresh single-purpose revoke magic link for this creator."""
+    settings = get_settings()
+    return (
+        f"{settings.public_base_url}/partner/revoke"
+        f"?token={create_magic_link_token(creator_id, 'revoke')}"
+    )
+
+
 def _token_error(request: Request, exc: InvalidMagicLinkToken) -> HTMLResponse:
     return templates.TemplateResponse(
         request, "token_error.html", {"message": str(exc)}, status_code=400
     )
 
 
-def _confirmation(request: Request, message: str, status_code: int = 200) -> HTMLResponse:
+def _confirmation(
+    request: Request, message: str, status_code: int = 200, revoke_url: str | None = None
+) -> HTMLResponse:
     return templates.TemplateResponse(
-        request, "confirmation.html", {"message": message}, status_code=status_code
+        request,
+        "confirmation.html",
+        {"message": message, "revoke_url": revoke_url},
+        status_code=status_code,
     )
 
 
@@ -63,6 +82,7 @@ def show_agreement(request: Request, token: str, db: Session = Depends(get_db)):
             "terms": terms,
             "terms_body": terms_body,
             "token": token,
+            "revoke_url": build_revoke_url(creator.id),
         },
     )
 
@@ -76,7 +96,9 @@ def submit_agreement(
     db: Session = Depends(get_db),
 ):
     try:
-        creator_id = verify_magic_link_token(token, expected_purpose="agree")
+        creator_id, token_issued_at = verify_magic_link_token_claims(
+            token, expected_purpose="agree"
+        )
     except InvalidMagicLinkToken as exc:
         return _token_error(request, exc)
 
@@ -89,11 +111,16 @@ def submit_agreement(
             signature_name=signature_name,
             ip=client_ip,
             user_agent=user_agent,
+            token_issued_at=token_issued_at,
         )
     except ValueError as exc:
         return _confirmation(request, str(exc), status_code=409)
 
-    return _confirmation(request, "You're all set — thanks for partnering with us.")
+    return _confirmation(
+        request,
+        "You're all set — thanks for partnering with us.",
+        revoke_url=build_revoke_url(creator_id),
+    )
 
 
 @router.get("/revoke", response_class=HTMLResponse)
