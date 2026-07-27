@@ -38,3 +38,12 @@ def test_list_drafted_only_returns_drafted(db_session):
 def test_approve_unknown_email_raises(db_session):
     with pytest.raises(ValueError):
         approve_outreach_email(db_session, 999999, approved_by_user_id=1)
+
+
+def test_approve_already_approved_email_raises(db_session):
+    creator = _make_creator(db_session)
+    drafted = draft_outreach_email(db_session, creator.id)
+    approve_outreach_email(db_session, drafted.id, approved_by_user_id=1)
+
+    with pytest.raises(ValueError, match="Cannot approve outreach email .* with status 'approved'"):
+        approve_outreach_email(db_session, drafted.id, approved_by_user_id=2)

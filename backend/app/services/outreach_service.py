@@ -44,6 +44,10 @@ def approve_outreach_email(db: Session, outreach_email_id: int, approved_by_user
     outreach_email = db.get(OutreachEmail, outreach_email_id)
     if outreach_email is None:
         raise ValueError(f"No outreach email with id {outreach_email_id}")
+    if outreach_email.status != OutreachStatus.DRAFTED.value:
+        raise ValueError(
+            f"Cannot approve outreach email {outreach_email_id} with status {outreach_email.status!r} (expected 'drafted')"
+        )
     outreach_email.status = OutreachStatus.APPROVED.value
     outreach_email.approved_by = approved_by_user_id
     db.commit()
