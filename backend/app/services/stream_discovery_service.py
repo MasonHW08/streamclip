@@ -118,10 +118,28 @@ def reconcile_twitch_subscriptions(db: Session, client: TwitchClient, callback_u
     }
     subscribed_channel_ids = client.list_subscribed_channel_ids()
 
-    # Subscribe to newly authorized creators
+    # Subscribe to newly authorized creators. Each call is isolated: Twitch
+    # answers 409 Conflict when a subscription already exists (a genuine race,
+    # or any other single-channel failure — 429, 5xx, a bad callback), and
+    # letting that propagate would abort the whole run *including the
+    # unsubscribe phase below*, so revoked creators' stale subscriptions would
+    # silently stop being cleaned up too. Same per-item isolation the pollers
+    # in workers/stream_discovery_tasks.py use.
     for channel_id in authorized_channel_ids - subscribed_channel_ids:
-        client.subscribe(channel_id, callback_url)
+        try:
+            client.subscribe(channel_id, callback_url)
+        except Exception:
+            logger.exception(
+                "reconcile_twitch_subscriptions: failed to subscribe channel_id=%s; skipping",
+                channel_id,
+            )
 
     # Unsubscribe from no-longer-authorized creators
     for channel_id in subscribed_channel_ids - authorized_channel_ids:
-        client.unsubscribe_channel(channel_id)
+        try:
+            client.unsubscribe_channel(channel_id)
+        except Exception:
+            logger.exception(
+                "reconcile_twitch_subscriptions: failed to unsubscribe channel_id=%s; skipping",
+                channel_id,
+            )

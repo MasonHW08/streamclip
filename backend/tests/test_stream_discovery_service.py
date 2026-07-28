@@ -218,3 +218,79 @@ def test_reconcile_twitch_subscriptions_subscribes_newly_authorized_creator(db_s
     reconcile_twitch_subscriptions(db_session, client, callback_url="https://example.com/webhook")
 
     assert authorized.platform_channel_id in client.subscribed_channel_ids
+
+
+def test_reconcile_twitch_subscriptions_does_not_resubscribe_already_subscribed_channel(db_session):
+    """A redundant subscribe() would draw a 409 Conflict from Twitch.
+
+    `subscribed_channel_ids` is a set and so cannot distinguish "subscribed
+    again" from "left alone" — `subscribe_calls` is what makes this assertable.
+    """
+    authorized = _authorized_creator(db_session)
+    client = FakeTwitchClient()
+    client.subscribed_channel_ids = {authorized.platform_channel_id}
+
+    reconcile_twitch_subscriptions(db_session, client, callback_url="https://example.com/webhook")
+
+    assert client.subscribe_calls == []
+
+
+class _FlakyTwitchClient(FakeTwitchClient):
+    """FakeTwitchClient that raises for one configured channel per operation.
+
+    Models Twitch answering 409 Conflict on a redundant subscribe (or any
+    single-channel failure) without aborting the caller's whole run.
+    """
+
+    def __init__(self, failing_subscribe_channel_id=None, failing_unsubscribe_channel_id=None):
+        super().__init__()
+        self.failing_subscribe_channel_id = failing_subscribe_channel_id
+        self.failing_unsubscribe_channel_id = failing_unsubscribe_channel_id
+
+    def subscribe(self, channel_id, callback_url):
+        self.subscribe_calls.append((channel_id, callback_url))
+        if channel_id == self.failing_subscribe_channel_id:
+            raise RuntimeError("simulated 409 Conflict: subscription already exists")
+        self.subscribed_channel_ids.add(channel_id)
+
+    def unsubscribe_channel(self, channel_id):
+        if channel_id == self.failing_unsubscribe_channel_id:
+            raise RuntimeError("simulated Twitch failure on delete")
+        super().unsubscribe_channel(channel_id)
+
+
+def test_reconcile_twitch_subscriptions_continues_past_a_failing_subscribe(db_session):
+    """One channel's subscribe() failure must not abort the rest of the run.
+
+    Critically, that includes the *unsubscribe* phase: without per-call
+    isolation a single 409 would also stop revoked creators' stale
+    subscriptions being cleaned up, silently and indefinitely.
+    """
+    creator1 = _authorized_creator(db_session)  # platform_channel_id "1"
+    creator2 = _second_authorized_creator(db_session)  # platform_channel_id "2"
+    client = _FlakyTwitchClient(failing_subscribe_channel_id=creator1.platform_channel_id)
+    client.subscribed_channel_ids = {"stale-channel"}
+
+    reconcile_twitch_subscriptions(db_session, client, callback_url="https://example.com/webhook")
+
+    assert {c for c, _ in client.subscribe_calls} == {
+        creator1.platform_channel_id,
+        creator2.platform_channel_id,
+    }
+    # The healthy creator still got subscribed despite the other one failing...
+    assert creator2.platform_channel_id in client.subscribed_channel_ids
+    assert creator1.platform_channel_id not in client.subscribed_channel_ids
+    # ...and the unsubscribe phase still ran.
+    assert "stale-channel" not in client.subscribed_channel_ids
+
+
+def test_reconcile_twitch_subscriptions_continues_past_a_failing_unsubscribe(db_session):
+    _authorized_creator(db_session)
+    client = _FlakyTwitchClient(failing_unsubscribe_channel_id="stale-a")
+    client.subscribed_channel_ids = {"stale-a", "stale-b"}
+
+    reconcile_twitch_subscriptions(db_session, client, callback_url="https://example.com/webhook")
+
+    # stale-a's failure did not prevent stale-b from being cleaned up.
+    assert "stale-b" not in client.subscribed_channel_ids
+    assert "stale-a" in client.subscribed_channel_ids
