@@ -21,6 +21,20 @@ async def poll_youtube_streams(ctx: dict) -> None:
         for creator in list_authorized_creators(db, platform="youtube"):
             try:
                 stream_info = client.get_stream_status(creator.platform_channel_id)
+                # reconcile_creator_stream_state re-checks is_authorized() as a
+                # defense-in-depth gate, but that check goes through
+                # db.get(Creator, ...) — which consults this session's identity
+                # map before the database. list_authorized_creators above has
+                # already loaded every Creator for this platform into that
+                # identity map, so without expiring this creator first the
+                # re-check would return the cached, pre-revocation object
+                # WITHOUT emitting a SELECT: a creator who revokes partway
+                # through a poll run would keep being monitored and written for
+                # the rest of the run. Expiring per-creator here (rather than
+                # once via expire_all() before the loop) is what makes the
+                # check live, because each reconcile commit re-populates the
+                # identity map for the objects it touches.
+                db.expire(creator)
                 reconcile_creator_stream_state(db, creator, stream_info)
             except Exception:
                 # One creator's transient failure (rate limit, 5xx, timeout,
@@ -59,6 +73,11 @@ async def poll_twitch_streams_backup(ctx: dict) -> None:
         for creator in list_authorized_creators(db, platform="twitch"):
             try:
                 stream_info = client.get_stream_status(creator.platform_channel_id)
+                # See poll_youtube_streams above: expire this creator so
+                # reconcile_creator_stream_state's is_authorized() re-check
+                # actually hits the database instead of the identity-map copy
+                # loaded by list_authorized_creators.
+                db.expire(creator)
                 reconcile_creator_stream_state(db, creator, stream_info)
             except Exception:
                 # See poll_youtube_streams above: isolate per-creator failures

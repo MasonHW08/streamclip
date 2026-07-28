@@ -145,6 +145,106 @@ async def test_poll_youtube_streams_one_creator_failure_does_not_block_the_rest(
     assert healthy_session is not None
 
 
+def _revoke_in_db(db, creator_id):
+    """Revoke a creator at the DATABASE level, bypassing the ORM identity map.
+
+    Mutating `creator.status` on the Python object would not reproduce the bug
+    under test: the whole point is that the in-memory copy the poll loop holds
+    is *stale* relative to the database. Issuing raw SQL is what a concurrent
+    revocation by another process/request looks like from this session's point
+    of view — the row changes underneath it while its identity map keeps the
+    pre-revocation copy.
+    """
+    db.execute(
+        text("UPDATE creators SET status = :status WHERE id = :creator_id"),
+        {"status": CreatorStatus.REVOKED.value, "creator_id": creator_id},
+    )
+
+
+def _revoke_after_listing(monkeypatch, creator):
+    """Make the poll task's creator listing revoke `creator` on its way out.
+
+    `list_authorized_creators` is what loads every Creator row for the platform
+    into the session's identity map; revoking immediately afterwards places the
+    revocation exactly where it hurts — after the poll run has cached the
+    creator as authorized, but before the loop's `is_authorized()` re-check.
+    """
+    from app.services.stream_discovery_service import (
+        list_authorized_creators as real_list_authorized_creators,
+    )
+
+    def list_then_revoke(db, platform):
+        creators = real_list_authorized_creators(db, platform=platform)
+        _revoke_in_db(db, creator.id)
+        return creators
+
+    monkeypatch.setattr(
+        "app.workers.stream_discovery_tasks.list_authorized_creators", list_then_revoke
+    )
+
+
+@pytest.mark.asyncio
+async def test_poll_youtube_streams_sees_revocation_that_lands_mid_run(db_session, monkeypatch):
+    """A revocation landing mid-run must stop that creator being monitored.
+
+    `is_authorized()` uses `db.get(Creator, ...)`, which consults the session's
+    identity map before the database. The poll loop's own
+    `list_authorized_creators` call has already loaded every Creator for the
+    platform into that identity map, so without an explicit `db.expire(creator)`
+    the in-loop re-check reads the cached, pre-revocation object and never
+    emits a SELECT — silently monitoring (and writing rows for) a creator who
+    has revoked.
+    """
+    monkeypatch.setattr(
+        "app.workers.stream_discovery_tasks.SessionLocal", lambda: _NonClosingSessionProxy(db_session)
+    )
+    creator = _authorized_creator(db_session, "youtube", "yt-revoked-mid-run")
+    _revoke_after_listing(monkeypatch, creator)
+
+    fake_client = FakeYouTubeClient()
+    fake_client.stream_status["yt-revoked-mid-run"] = StreamInfo(
+        external_stream_id="vid-revoked", title="t", category=None, viewer_count=5,
+        started_at=datetime.now(UTC),
+    )
+    monkeypatch.setattr(
+        "app.workers.stream_discovery_tasks.YouTubeAPIClient", lambda api_key: fake_client
+    )
+
+    await poll_youtube_streams({})
+
+    assert (
+        db_session.query(StreamSession).filter(StreamSession.creator_id == creator.id).count() == 0
+    )
+
+
+@pytest.mark.asyncio
+async def test_poll_twitch_streams_backup_sees_revocation_that_lands_mid_run(
+    db_session, monkeypatch
+):
+    """Same identity-map staleness hazard as the YouTube poller above."""
+    monkeypatch.setattr(
+        "app.workers.stream_discovery_tasks.SessionLocal", lambda: _NonClosingSessionProxy(db_session)
+    )
+    creator = _authorized_creator(db_session, "twitch", "tw-revoked-mid-run")
+    _revoke_after_listing(monkeypatch, creator)
+
+    fake_client = FakeTwitchClient()
+    fake_client.stream_status["tw-revoked-mid-run"] = StreamInfo(
+        external_stream_id="s-revoked", title="t", category="c", viewer_count=5,
+        started_at=datetime.now(UTC),
+    )
+    monkeypatch.setattr(
+        "app.workers.stream_discovery_tasks.TwitchAPIClient",
+        lambda client_id, client_secret: fake_client,
+    )
+
+    await poll_twitch_streams_backup({})
+
+    assert (
+        db_session.query(StreamSession).filter(StreamSession.creator_id == creator.id).count() == 0
+    )
+
+
 @pytest.mark.asyncio
 async def test_poll_youtube_streams_db_error_for_one_creator_does_not_poison_session_for_the_rest(
     db_session, monkeypatch
