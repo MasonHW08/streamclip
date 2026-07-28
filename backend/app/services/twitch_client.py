@@ -37,6 +37,12 @@ class FakeTwitchClient:
     def __init__(self) -> None:
         self.stream_status: dict[str, StreamInfo] = {}
         self.subscribed_channel_ids: set[str] = set()
+        # Every subscribe() call, in order, never deduplicated. `subscribed_channel_ids`
+        # is a set, so a redundant subscribe() for an already-subscribed channel
+        # is indistinguishable from no call at all when inspecting it — which
+        # made redundant-subscription bugs untestable. Assert against this list
+        # to prove subscribe() was (or was not) called again.
+        self.subscribe_calls: list[tuple[str, str]] = []
 
     def get_stream_status(self, channel_id: str) -> StreamInfo | None:
         return self.stream_status.get(channel_id)
@@ -45,6 +51,7 @@ class FakeTwitchClient:
         return set(self.subscribed_channel_ids)
 
     def subscribe(self, channel_id: str, callback_url: str) -> None:
+        self.subscribe_calls.append((channel_id, callback_url))
         self.subscribed_channel_ids.add(channel_id)
 
     def unsubscribe_channel(self, channel_id: str) -> None:
@@ -114,11 +121,43 @@ class TwitchAPIClient:
             started_at=datetime.fromisoformat(stream["started_at"].replace("Z", "+00:00")),
         )
 
+    def _list_subscriptions(self) -> list[dict]:
+        """Return every EventSub subscription, following Twitch's pagination.
+
+        Twitch paginates GET /helix/eventsub/subscriptions and returns a
+        `pagination.cursor` when more pages exist. Reading only the first page
+        under-reports the subscription list, which matters at low double-digit
+        creator counts (each creator holds two subscriptions: stream.online and
+        stream.offline). An incomplete list makes
+        reconcile_twitch_subscriptions' `authorized - subscribed` diff wrong —
+        it would re-subscribe channels that are already subscribed — and makes
+        unsubscribe_channel miss stale subscriptions it was asked to delete.
+        """
+        subscriptions: list[dict] = []
+        params: dict[str, str] = {}
+        while True:
+            response = httpx.get(
+                _EVENTSUB_URL, headers=self._headers(), params=params, timeout=10.0
+            )
+            response.raise_for_status()
+            payload = response.json()
+            subscriptions.extend(payload["data"])
+            cursor = (payload.get("pagination") or {}).get("cursor")
+            if not cursor:
+                return subscriptions
+            params = {"after": cursor}
+
     def list_subscribed_channel_ids(self) -> set[str]:
-        response = httpx.get(_EVENTSUB_URL, headers=self._headers(), timeout=10.0)
-        response.raise_for_status()
+        # Only `enabled` subscriptions actually deliver events. Twitch keeps
+        # returning dead ones (webhook_callback_verification_failed,
+        # notification_failures_exceeded, authorization_revoked, ...), and
+        # counting those as "subscribed" would permanently blind
+        # reconcile_twitch_subscriptions to its own primary failure mode: a
+        # subscription that stopped working never gets re-created.
         return {
-            item["condition"]["broadcaster_user_id"] for item in response.json()["data"]
+            item["condition"]["broadcaster_user_id"]
+            for item in self._list_subscriptions()
+            if item.get("status") == "enabled"
         }
 
     def subscribe(self, channel_id: str, callback_url: str) -> None:
@@ -142,11 +181,12 @@ class TwitchAPIClient:
             response.raise_for_status()
 
     def unsubscribe_channel(self, channel_id: str) -> None:
-        response = httpx.get(_EVENTSUB_URL, headers=self._headers(), timeout=10.0)
-        response.raise_for_status()
+        # Deliberately NOT filtered by status, unlike list_subscribed_channel_ids:
+        # when removing a channel we want every subscription gone, including
+        # the dead/failed ones.
         subscription_ids = [
             item["id"]
-            for item in response.json()["data"]
+            for item in self._list_subscriptions()
             if item["condition"]["broadcaster_user_id"] == channel_id
         ]
         for subscription_id in subscription_ids:

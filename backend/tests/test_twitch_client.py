@@ -132,15 +132,84 @@ def test_list_subscribed_channel_ids(mock_get, mock_post, mock_delete, monkeypat
     mock_get.return_value = _mock_response(
         {
             "data": [
-                {"condition": {"broadcaster_user_id": "channel-1"}},
-                {"condition": {"broadcaster_user_id": "channel-2"}},
-                {"condition": {"broadcaster_user_id": "channel-1"}},
+                {"status": "enabled", "condition": {"broadcaster_user_id": "channel-1"}},
+                {"status": "enabled", "condition": {"broadcaster_user_id": "channel-2"}},
+                {"status": "enabled", "condition": {"broadcaster_user_id": "channel-1"}},
             ]
         }
     )
 
     client = TwitchAPIClient(client_id="cid", client_secret="csecret")
     assert client.list_subscribed_channel_ids() == {"channel-1", "channel-2"}
+
+
+@patch("app.services.twitch_client.httpx.delete")
+@patch("app.services.twitch_client.httpx.post")
+@patch("app.services.twitch_client.httpx.get")
+def test_list_subscribed_channel_ids_ignores_non_enabled_subscriptions(
+    mock_get, mock_post, mock_delete
+):
+    """Only `enabled` subscriptions are actually delivering events.
+
+    A dead subscription counted as "subscribed" would make
+    reconcile_twitch_subscriptions permanently skip re-subscribing that
+    creator — blinding the self-healing job to its own primary failure mode.
+    """
+    mock_post.return_value = _mock_response({"access_token": "tok-1", "expires_in": 3600})
+    mock_get.return_value = _mock_response(
+        {
+            "data": [
+                {"status": "enabled", "condition": {"broadcaster_user_id": "healthy-channel"}},
+                {
+                    "status": "notification_failures_exceeded",
+                    "condition": {"broadcaster_user_id": "dead-channel"},
+                },
+                {
+                    "status": "webhook_callback_verification_failed",
+                    "condition": {"broadcaster_user_id": "unverified-channel"},
+                },
+                {
+                    "status": "authorization_revoked",
+                    "condition": {"broadcaster_user_id": "revoked-channel"},
+                },
+            ]
+        }
+    )
+
+    client = TwitchAPIClient(client_id="cid", client_secret="csecret")
+    assert client.list_subscribed_channel_ids() == {"healthy-channel"}
+
+
+@patch("app.services.twitch_client.httpx.delete")
+@patch("app.services.twitch_client.httpx.post")
+@patch("app.services.twitch_client.httpx.get")
+def test_list_subscribed_channel_ids_follows_pagination_cursor(mock_get, mock_post, mock_delete):
+    mock_post.return_value = _mock_response({"access_token": "tok-1", "expires_in": 3600})
+    mock_get.side_effect = [
+        _mock_response(
+            {
+                "data": [
+                    {"status": "enabled", "condition": {"broadcaster_user_id": "page1-channel"}}
+                ],
+                "pagination": {"cursor": "cursor-abc"},
+            }
+        ),
+        _mock_response(
+            {
+                "data": [
+                    {"status": "enabled", "condition": {"broadcaster_user_id": "page2-channel"}}
+                ],
+                "pagination": {},
+            }
+        ),
+    ]
+
+    client = TwitchAPIClient(client_id="cid", client_secret="csecret")
+
+    assert client.list_subscribed_channel_ids() == {"page1-channel", "page2-channel"}
+    assert mock_get.call_count == 2
+    assert mock_get.call_args_list[0].kwargs["params"] == {}
+    assert mock_get.call_args_list[1].kwargs["params"] == {"after": "cursor-abc"}
 
 
 @patch("app.services.twitch_client.httpx.delete")
@@ -194,3 +263,68 @@ def test_unsubscribe_channel_deletes_its_subscriptions(mock_get, mock_post, mock
 
     deleted_ids = {call.kwargs["params"]["id"] for call in mock_delete.call_args_list}
     assert deleted_ids == {"sub-1", "sub-2"}
+
+
+@patch("app.services.twitch_client.httpx.delete")
+@patch("app.services.twitch_client.httpx.post")
+@patch("app.services.twitch_client.httpx.get")
+def test_unsubscribe_channel_follows_pagination_cursor(mock_get, mock_post, mock_delete):
+    """A stale subscription on page 2 must still be deleted.
+
+    Reading only the first page would silently leave it in place, so a revoked
+    creator would keep receiving EventSub notifications indefinitely.
+    """
+    mock_post.return_value = _mock_response({"access_token": "tok-1", "expires_in": 3600})
+    mock_get.side_effect = [
+        _mock_response(
+            {
+                "data": [
+                    {
+                        "id": "sub-page1",
+                        "status": "enabled",
+                        "condition": {"broadcaster_user_id": "channel-1"},
+                    },
+                    {
+                        "id": "sub-other",
+                        "status": "enabled",
+                        "condition": {"broadcaster_user_id": "channel-2"},
+                    },
+                ],
+                "pagination": {"cursor": "cursor-abc"},
+            }
+        ),
+        _mock_response(
+            {
+                "data": [
+                    {
+                        "id": "sub-page2",
+                        # A dead subscription must be deleted too — unsubscribe
+                        # intentionally ignores status.
+                        "status": "notification_failures_exceeded",
+                        "condition": {"broadcaster_user_id": "channel-1"},
+                    }
+                ]
+            }
+        ),
+    ]
+    mock_delete.return_value = _mock_response({}, status_code=204)
+
+    client = TwitchAPIClient(client_id="cid", client_secret="csecret")
+    client.unsubscribe_channel("channel-1")
+
+    deleted_ids = {call.kwargs["params"]["id"] for call in mock_delete.call_args_list}
+    assert deleted_ids == {"sub-page1", "sub-page2"}
+    assert mock_get.call_args_list[1].kwargs["params"] == {"after": "cursor-abc"}
+
+
+def test_fake_client_records_every_subscribe_call_without_deduplicating():
+    """`subscribed_channel_ids` is a set, so it cannot show a redundant call."""
+    client = FakeTwitchClient()
+    client.subscribe("channel-1", "https://example.com/webhook")
+    client.subscribe("channel-1", "https://example.com/webhook")
+
+    assert client.subscribed_channel_ids == {"channel-1"}
+    assert client.subscribe_calls == [
+        ("channel-1", "https://example.com/webhook"),
+        ("channel-1", "https://example.com/webhook"),
+    ]
