@@ -25,6 +25,15 @@ class YouTubeAPIClient:
         self._api_key = api_key
 
     def get_stream_status(self, channel_id: str) -> StreamInfo | None:
+        # The API key goes in the X-goog-api-key header, NOT the `key` query
+        # parameter. httpx embeds the full request URL — query string included —
+        # in the HTTPStatusError raised by raise_for_status(), and the poll
+        # loop logs that exception with logger.exception(). With the key in the
+        # URL, every failed request (403 quotaExceeded is the expected steady
+        # state at the shipped poll cadence) would write the live API key into
+        # application logs. Google's APIs accept the header form, which keeps
+        # the key out of the URL entirely — and so out of exception messages,
+        # access logs, and anywhere else the URL surfaces.
         response = httpx.get(
             _SEARCH_URL,
             params={
@@ -32,8 +41,8 @@ class YouTubeAPIClient:
                 "channelId": channel_id,
                 "eventType": "live",
                 "type": "video",
-                "key": self._api_key,
             },
+            headers={"X-goog-api-key": self._api_key},
             timeout=10.0,
         )
         response.raise_for_status()
